@@ -90,6 +90,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set build version
+        id: build-version
+        run: |
+          if [ "${{ needs.check-version.outputs.latest-version }}" ]; then
+            VERSION=$(echo "${{ needs.check-version.outputs.latest-version }}" | sed 's/^v//')
+          else
+            VERSION="25.1.2"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -99,7 +109,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            REDPANDA_VERSION=${{ needs.check-version.outputs.latest-version && substring(needs.check-version.outputs.latest-version, 1) || '25.1.2' }}
+            REDPANDA_VERSION=${{ steps.build-version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
