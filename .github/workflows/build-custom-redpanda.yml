@@ -1,0 +1,127 @@
+name: Build Custom Redpanda Image
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Dockerfile'
+      - '.github/workflows/build-custom-redpanda.yml'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/redpanda-custom
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should-build: ${{ steps.version-check.outputs.should-build }}
+      latest-version: ${{ steps.version-check.outputs.latest-version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for new Redpanda version
+        id: version-check
+        run: |
+          CURRENT_VERSION=$(grep -oP 'ARG REDPANDA_VERSION=\K[0-9]+\.[0-9]+\.[0-9]+' Dockerfile)
+          echo "Current version: $CURRENT_VERSION"
+          
+          LATEST_VERSION=$(curl -s "https://registry.hub.docker.com/v2/repositories/redpandadata/redpanda/tags/?page_size=100" | \
+            jq -r '.results[].name' | \
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | \
+            sort -V | \
+            tail -1)
+          
+          echo "Latest version: $LATEST_VERSION"
+          echo "latest-version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          
+          LATEST_VERSION_NUMERIC=$(echo "$LATEST_VERSION" | sed 's/^v//')
+          if [ "$CURRENT_VERSION" != "$LATEST_VERSION_NUMERIC" ]; then
+            echo "New version available: $LATEST_VERSION"
+            echo "should-build=true" >> $GITHUB_OUTPUT
+          else
+            echo "No new version available"
+            echo "should-build=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-push:
+    needs: check-version
+    if: needs.check-version.outputs.should-build == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update Dockerfile with new version
+        if: needs.check-version.outputs.should-build == 'true'
+        run: |
+          NEW_VERSION=${{ needs.check-version.outputs.latest-version }}
+          NEW_VERSION_NUMERIC=$(echo "$NEW_VERSION" | sed 's/^v//')
+          sed -i "s/ARG REDPANDA_VERSION=[0-9]\+\.[0-9]\+\.[0-9]\+/ARG REDPANDA_VERSION=$NEW_VERSION_NUMERIC/" Dockerfile
+          
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add Dockerfile
+          git commit -m "Update Redpanda to v$NEW_VERSION" || exit 0
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ needs.check-version.outputs.latest-version }},enable=${{ needs.check-version.outputs.should-build == 'true' }}
+            type=sha
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            REDPANDA_VERSION=${{ needs.check-version.outputs.latest-version && substring(needs.check-version.outputs.latest-version, 1) || '25.1.2' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push updated Dockerfile
+        if: needs.check-version.outputs.should-build == 'true'
+        run: |
+          git push origin main || true
+
+      - name: Create release
+        if: needs.check-version.outputs.should-build == 'true'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.check-version.outputs.latest-version }}
+          release_name: Custom Redpanda ${{ needs.check-version.outputs.latest-version }}
+          body: |
+            Custom Redpanda image based on official ${{ needs.check-version.outputs.latest-version }}
+            
+            Changes:
+            - Increased ulimit -n to 65536 for better performance
+            
+            Docker image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.check-version.outputs.latest-version }}`
+          draft: false
+          prerelease: false
