@@ -68,7 +68,7 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add Dockerfile
-          git commit -m "Update Redpanda to v$NEW_VERSION" || exit 0
+          git commit -m "Update Redpanda to $NEW_VERSION" || exit 0
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
