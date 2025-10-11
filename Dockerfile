@@ -1,4 +1,4 @@
-ARG REDPANDA_VERSION=25.2.8
+ARG REDPANDA_VERSION=25.2.9
 FROM --platform=linux/amd64 docker.redpanda.com/redpandadata/redpanda:v${REDPANDA_VERSION}
 
 USER root
